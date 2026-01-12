@@ -228,7 +228,7 @@ serve(async (req) => {
     }
 
     const properties: Property[] = [];
-    const errors: string[] = [];
+    const errors: (object|string)[] = [];
 
     // Fetch each property page (with concurrency limit)
     const batchSize = 5;
@@ -251,14 +251,13 @@ serve(async (req) => {
             }
 
             const html = await response.text();
-            console.log({html, link});
             
             const property = parsePropertyPage(html, link);
             
             if (property) {
               return property;
             } else {
-              errors.push(`${link}: Coordenadas não encontradas`);
+              errors.push({ link , html});
               return null;
             }
           } catch (err) {
