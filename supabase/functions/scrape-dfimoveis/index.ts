@@ -232,6 +232,7 @@ serve(async (req) => {
 
     // Fetch each property page (with concurrency limit)
     const batchSize = 5;
+    
     for (let i = 0; i < propertyLinks.length; i += batchSize) {
       const batch = propertyLinks.slice(i, i + batchSize);
       
@@ -250,6 +251,8 @@ serve(async (req) => {
             }
 
             const html = await response.text();
+            console.log({html, link});
+            
             const property = parsePropertyPage(html, link);
             
             if (property) {
