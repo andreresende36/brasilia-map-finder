@@ -2,7 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
-@import "leaflet/dist/leaflet.css";
+/* Leaflet CSS is imported in the component */
 
 /* DFImóveis Mapper - Design System
    Cores: Azul petróleo profissional + tons neutros
