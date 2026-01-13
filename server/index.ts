@@ -37,6 +37,28 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
+// Configuração em runtime para o frontend (Railway Variables).
+// O Vite "congela" import.meta.env no build, então expomos as variáveis via /config.js.
+app.get("/config.js", (req, res) => {
+  const raw = process.env.DOMAIN_URL || "";
+  const trimmed = raw.trim();
+
+  // Aceita:
+  // - "web-production-xxxx.up.railway.app"
+  // - "https://web-production-xxxx.up.railway.app"
+  // - "https://web-production-xxxx.up.railway.app/api" (o frontend normaliza)
+  const apiBaseUrl = trimmed
+    ? trimmed.startsWith("http://") || trimmed.startsWith("https://")
+      ? trimmed
+      : `https://${trimmed}`
+    : "";
+
+  res.setHeader("Content-Type", "application/javascript; charset=utf-8");
+  res.setHeader("Cache-Control", "no-store, max-age=0");
+  // Enviamos como ESM para evitar warnings do Vite quando incluído com type="module".
+  res.send(`window.__APP_CONFIG__ = ${JSON.stringify({ apiBaseUrl })};\nexport {};`);
+});
+
 // Serve static files from dist (frontend build)
 const isProduction = process.env.NODE_ENV === "production";
 if (isProduction) {
