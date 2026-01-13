@@ -1,5 +1,7 @@
 [phases.setup]
-nixPkgs = ["nodejs-20_x"]
+# Em algumas revisões do nixpkgs (usadas pelo Railway/Nixpacks),
+# o pacote é exposto como `nodejs_20` (e não `nodejs-20_x`).
+nixPkgs = ["nodejs_20"]
 
 [phases.install]
 cmds = ["npm install"]
