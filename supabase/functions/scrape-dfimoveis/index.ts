@@ -216,7 +216,7 @@ serve(async (req) => {
     const errors: string[] = [];
 
     // Fetch each property page (with concurrency limit)
-    const batchSize = 5;
+    const batchSize = 50;
     
     for (let i = 0; i < propertyLinks.length; i += batchSize) {
       const batch = propertyLinks.slice(i, i + batchSize);
@@ -263,6 +263,12 @@ serve(async (req) => {
     }
 
     console.log(`Successfully scraped ${properties.length} properties`);
+    console.log({
+      success: true,
+      properties,
+      total: properties.length,
+      errors: errors.slice(0, 10), // Limit error messages
+    });
 
     return new Response(
       JSON.stringify({
