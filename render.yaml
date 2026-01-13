@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: brasilia-map-finder
+    env: node
+    buildCommand: npm install && npm run build && npm run build:server
+    startCommand: NODE_ENV=production npm run start:prod
+    envVars:
+      - key: NODE_ENV
+        value: production
+    healthCheckPath: /
+

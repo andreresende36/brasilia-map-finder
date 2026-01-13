@@ -4,9 +4,14 @@ import * as cheerio from "cheerio";
 import puppeteer from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import { type Browser } from "puppeteer";
+import path from "path";
+import { fileURLToPath } from "url";
 
 // Use stealth plugin to avoid Cloudflare detection
 puppeteer.use(StealthPlugin());
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 interface Property {
   id: string;
@@ -27,10 +32,16 @@ interface ScrapingResult {
 }
 
 const app = express();
-const PORT = 3001;
+const PORT = process.env.PORT || 3001;
 
 app.use(cors());
 app.use(express.json());
+
+// Serve static files from dist (frontend build)
+const isProduction = process.env.NODE_ENV === "production";
+if (isProduction) {
+  app.use(express.static(path.join(__dirname, "../dist")));
+}
 
 // Browser instance (singleton)
 let browser: Browser | null = null;
@@ -323,6 +334,13 @@ app.post("/api/scrape", async (req, res) => {
   }
 });
 
+// Serve frontend in production
+if (isProduction) {
+  app.get("*", (req, res) => {
+    res.sendFile(path.join(__dirname, "../dist/index.html"));
+  });
+}
+
 // Graceful shutdown
 process.on('SIGINT', async () => {
   console.log('\nShutting down gracefully...');
@@ -342,4 +360,7 @@ process.on('SIGTERM', async () => {
 
 app.listen(PORT, () => {
   console.log(`🚀 Servidor de scraping rodando em http://localhost:${PORT}`);
+  if (isProduction) {
+    console.log(`📦 Modo produção: servindo frontend estático`);
+  }
 });
