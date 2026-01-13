@@ -1,10 +1,12 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import * as cheerio from "https://esm.sh/cheerio@1.0.0-rc.12";
+import express from "express";
+import cors from "cors";
+import * as cheerio from "cheerio";
+import puppeteer from "puppeteer-extra";
+import StealthPlugin from "puppeteer-extra-plugin-stealth";
+import { type Browser } from "puppeteer";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
+// Use stealth plugin to avoid Cloudflare detection
+puppeteer.use(StealthPlugin());
 
 interface Property {
   id: string;
@@ -15,6 +17,70 @@ interface Property {
   link: string;
   latitude: number;
   longitude: number;
+}
+
+interface ScrapingResult {
+  success: boolean;
+  properties: Property[];
+  total: number;
+  errors: string[];
+}
+
+const app = express();
+const PORT = 3001;
+
+app.use(cors());
+app.use(express.json());
+
+// Browser instance (singleton)
+let browser: Browser | null = null;
+
+// Initialize browser
+async function getBrowser(): Promise<Browser> {
+  if (!browser) {
+    browser = await puppeteer.launch({
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--disable-gpu',
+        '--window-size=1920x1080',
+      ],
+    });
+  }
+  return browser;
+}
+
+// Fetch HTML using Puppeteer
+async function fetchWithPuppeteer(url: string): Promise<string> {
+  const browser = await getBrowser();
+  const page = await browser.newPage();
+  
+  try {
+    // Set user agent
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
+    
+    // Set viewport
+    await page.setViewport({ width: 1920, height: 1080 });
+    
+    // Navigate to URL (using 'load' - waits for HTML, CSS, images, and scripts to load)
+    await page.goto(url, {
+      waitUntil: 'load',
+      timeout: 20000,
+    });
+    
+    // Wait a bit for scripts to execute (reduced from 2000ms to 1000ms)
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // Get HTML content
+    const html = await page.content();
+    
+    return html;
+  } finally {
+    await page.close();
+  }
 }
 
 // Extract price value from string
@@ -54,55 +120,25 @@ function parseListingPage(html: string, baseUrl: string): string[] {
 }
 
 // Parse individual property page
-function parsePropertyPage(html: string, url: string): Property | null {
+async function parsePropertyPage(html: string, url: string): Promise<Property | null> {
   const $ = cheerio.load(html);
 
   // Extract coordinates from script tags
+  // DFImóveis uses: latitude = -15.xxx; longitude = -47.xxx;
   let latitude = 0;
   let longitude = 0;
-
-  // Look for google maps embed or data attributes
+  
   $("script").each((_, el) => {
     const content = $(el).html() || "";
     
-    // Pattern: new google.maps.LatLng(-15.xxx, -47.xxx)
-    const latLngMatch = content.match(/LatLng\s*\(\s*([-\d.]+)\s*,\s*([-\d.]+)\s*\)/);
-    if (latLngMatch) {
-      latitude = parseFloat(latLngMatch[1]);
-      longitude = parseFloat(latLngMatch[2]);
-    }
-
-    // Pattern: lat: -15.xxx, lng: -47.xxx
-    const latMatch = content.match(/lat[itude]*["'\s:]+\s*([-\d.]+)/i);
-    const lngMatch = content.match(/lng|longitude["'\s:]+\s*([-\d.]+)/i);
-    if (latMatch && lngMatch && !latitude) {
+    // Pattern: latitude = -15.8705378; longitude = -47.9686399;
+    const latMatch = content.match(/latitude\s*=\s*([-\d.]+)\s*;/i);
+    const lngMatch = content.match(/longitude\s*=\s*([-\d.]+)\s*;/i);
+    
+    if (latMatch && lngMatch) {
       latitude = parseFloat(latMatch[1]);
       longitude = parseFloat(lngMatch[1]);
-    }
-
-    // Pattern: coordinates in JSON
-    const coordMatch = content.match(/"latitude":\s*([-\d.]+).*?"longitude":\s*([-\d.]+)/);
-    if (coordMatch && !latitude) {
-      latitude = parseFloat(coordMatch[1]);
-      longitude = parseFloat(coordMatch[2]);
-    }
-  });
-
-  // Also check meta tags and data attributes
-  const latAttr = $('[data-lat], [data-latitude]').first().data('lat') || $('[data-lat], [data-latitude]').first().data('latitude');
-  const lngAttr = $('[data-lng], [data-longitude]').first().data('lng') || $('[data-lng], [data-longitude]').first().data('longitude');
-  if (latAttr && lngAttr && !latitude) {
-    latitude = parseFloat(String(latAttr));
-    longitude = parseFloat(String(lngAttr));
-  }
-
-  // Check iframe src for coordinates
-  $('iframe[src*="maps"]').each((_, el) => {
-    const src = $(el).attr('src') || '';
-    const match = src.match(/q=([-\d.]+),([-\d.]+)/);
-    if (match && !latitude) {
-      latitude = parseFloat(match[1]);
-      longitude = parseFloat(match[2]);
+      return false; // Break out of loop
     }
   });
 
@@ -173,65 +209,50 @@ function parsePropertyPage(html: string, url: string): Property | null {
   };
 }
 
-serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
-  }
-
+// API endpoint for scraping
+app.post("/api/scrape", async (req, res) => {
   try {
-    const { url } = await req.json();
+    const { url } = req.body;
 
     if (!url || !url.includes("dfimoveis.com.br")) {
-      return new Response(
-        JSON.stringify({
-          success: false,
-          error: "URL inválida. Use uma URL do DFImóveis.",
-          properties: [],
-          total: 0,
-          errors: [],
-        }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return res.status(400).json({
+        success: false,
+        properties: [],
+        total: 0,
+        errors: ["URL inválida. Use uma URL do DFImóveis."],
+      });
     }
 
     console.log("Fetching listing page:", url);
 
-    // Fetch the listing page
-    const listingResponse = await fetch(url, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
-      },
-    });
-
-    if (!listingResponse.ok) {
-      throw new Error(`Falha ao acessar a página: ${listingResponse.status}`);
+    // Fetch the listing page using Puppeteer
+    let listingHtml: string;
+    try {
+      listingHtml = await fetchWithPuppeteer(url);
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : "Erro ao acessar a página";
+      console.error("Error fetching page:", errorMsg);
+      throw new Error(`Falha ao acessar a página: ${errorMsg}`);
     }
 
-    const listingHtml = await listingResponse.text();
     const propertyLinks = parseListingPage(listingHtml, url);
 
     console.log(`Found ${propertyLinks.length} property links`);
 
     if (propertyLinks.length === 0) {
-      return new Response(
-        JSON.stringify({
-          success: false,
-          error: "Nenhum imóvel encontrado nesta listagem.",
-          properties: [],
-          total: 0,
-          errors: [],
-        }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return res.json({
+        success: false,
+        properties: [],
+        total: 0,
+        errors: ["Nenhum imóvel encontrado nesta listagem."],
+      });
     }
 
     const properties: Property[] = [];
-    const errors: (object|string)[] = [];
+    const errors: string[] = [];
 
     // Fetch each property page (with concurrency limit)
-    const batchSize = 5;
+    const batchSize = 50; // Increased batch size for better performance
     
     for (let i = 0; i < propertyLinks.length; i += batchSize) {
       const batch = propertyLinks.slice(i, i + batchSize);
@@ -239,30 +260,29 @@ serve(async (req) => {
       const batchResults = await Promise.allSettled(
         batch.map(async (link) => {
           try {
-            const response = await fetch(link, {
-              headers: {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Accept": "text/html,application/xhtml+xml",
-              },
-            });
-
-            if (!response.ok) {
-              throw new Error(`HTTP ${response.status}`);
+            let html: string;
+            try {
+              html = await fetchWithPuppeteer(link);
+            } catch (err) {
+              const errorMsg = err instanceof Error ? err.message : "Erro desconhecido";
+              throw new Error(`HTTP Error: ${errorMsg}`);
             }
-
-            const html = await response.text();
             
-            const property = parsePropertyPage(html, link);
+            const property = await parsePropertyPage(html, link);
             
             if (property) {
               return property;
-            } else {
-              errors.push({ link , html});
+            } else {              
+              const errorMsg = `${link}: Sem coordenadas válidas`;
+              errors.push(errorMsg);
+              console.warn(`⚠️  ${errorMsg}`);
               return null;
             }
           } catch (err) {
             const errorMsg = err instanceof Error ? err.message : "Erro desconhecido";
-            errors.push(`${link}: ${errorMsg}`);
+            const fullError = `${link}: ${errorMsg}`;
+            errors.push(fullError);
+            console.error(`❌ ${fullError}`);
             return null;
           }
         })
@@ -276,29 +296,50 @@ serve(async (req) => {
     }
 
     console.log(`Successfully scraped ${properties.length} properties`);
+    
+    if (errors.length > 0) {
+      console.log(`\n⚠️  ${errors.length} propriedade(s) falharam:`);
+      errors.slice(0, 10).forEach((error, index) => {
+        console.log(`   ${index + 1}. ${error}`);
+      });
+    }
 
-    return new Response(
-      JSON.stringify({
-        success: true,
-        properties,
-        total: properties.length,
-        errors: errors.slice(0, 10), // Limit error messages
-      }),
-      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    res.json({
+      success: true,
+      properties,
+      total: properties.length,
+      errors: errors.slice(0, 10), // Limit error messages
+    });
   } catch (err) {
     console.error("Scraping error:", err);
     const errorMsg = err instanceof Error ? err.message : "Erro ao buscar imóveis";
     
-    return new Response(
-      JSON.stringify({
-        success: false,
-        error: errorMsg,
-        properties: [],
-        total: 0,
-        errors: [],
-      }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    res.status(500).json({
+      success: false,
+      properties: [],
+      total: 0,
+      errors: [errorMsg],
+    });
   }
+});
+
+// Graceful shutdown
+process.on('SIGINT', async () => {
+  console.log('\nShutting down gracefully...');
+  if (browser) {
+    await browser.close();
+  }
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.log('\nShutting down gracefully...');
+  if (browser) {
+    await browser.close();
+  }
+  process.exit(0);
+});
+
+app.listen(PORT, () => {
+  console.log(`🚀 Servidor de scraping rodando em http://localhost:${PORT}`);
 });
