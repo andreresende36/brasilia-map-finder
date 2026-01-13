@@ -336,7 +336,9 @@ app.post("/api/scrape", async (req, res) => {
 
 // Serve frontend in production
 if (isProduction) {
-  app.get("*", (req, res) => {
+  // Express 5 + path-to-regexp v6 não aceita "*" como rota.
+  // Usamos RegExp para fallback SPA e evitamos capturar rotas /api/*.
+  app.get(/^(?!\/api\/).*/, (req, res) => {
     res.sendFile(path.join(__dirname, "../dist/index.html"));
   });
 }
