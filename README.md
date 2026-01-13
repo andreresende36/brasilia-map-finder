@@ -4,6 +4,10 @@
 
 **URL**: https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID
 
+## Documentação (API pública)
+
+- **API pública (Frontend + Backend)**: `docs/PUBLIC_API.md`
+
 ## How can I edit this code?
 
 There are several ways of editing your application.
