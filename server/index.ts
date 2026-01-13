@@ -4,8 +4,8 @@ import * as cheerio from "cheerio";
 import puppeteer from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import { type Browser } from "puppeteer";
-import path from "path";
-import { fileURLToPath } from "url";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 // Use stealth plugin to avoid Cloudflare detection
 puppeteer.use(StealthPlugin());
