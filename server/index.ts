@@ -40,7 +40,9 @@ app.use(express.json());
 // Serve static files from dist (frontend build)
 const isProduction = process.env.NODE_ENV === "production";
 if (isProduction) {
-  app.use(express.static(path.join(__dirname, "../dist")));
+  // Em produção o server compilado roda em `dist/server/index.js`,
+  // então o diretório do frontend é `dist/` (um nível acima).
+  app.use(express.static(path.join(__dirname, "..")));
 }
 
 // Browser instance (singleton)
@@ -339,7 +341,8 @@ if (isProduction) {
   // Express 5 + path-to-regexp v6 não aceita "*" como rota.
   // Usamos RegExp para fallback SPA e evitamos capturar rotas /api/*.
   app.get(/^(?!\/api\/).*/, (req, res) => {
-    res.sendFile(path.join(__dirname, "../dist/index.html"));
+    // Em produção o server roda em `dist/server/`, então o index do frontend está em `dist/index.html`.
+    res.sendFile(path.join(__dirname, "..", "index.html"));
   });
 }
 
