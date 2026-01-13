@@ -9,253 +9,282 @@ const corsHeaders = {
 interface Property {
   id: string;
   title: string;
-  price: number;
-  priceFormatted: string;
+  price: string;
+  priceValue: number;
   image: string;
-  url: string;
+  link: string;
   latitude: number;
   longitude: number;
-  address?: string;
-  area?: string;
-  bedrooms?: number;
-  bathrooms?: number;
-  parkingSpaces?: number;
 }
 
-async function fetchWithRetry(url: string, retries = 3): Promise<string> {
-  for (let i = 0; i < retries; i++) {
-    try {
-      const response = await fetch(url, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-          "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
-          "Cache-Control": "no-cache",
-        },
-      });
-      
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-      
-      return await response.text();
-    } catch (error) {
-      console.error(`Attempt ${i + 1} failed:`, error);
-      if (i === retries - 1) throw error;
-      await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)));
-    }
-  }
-  throw new Error("All retries failed");
+interface ScrapingResult {
+  success: boolean;
+  properties: Property[];
+  total: number;
+  errors: string[];
 }
 
-function extractCoordinates(html: string): { lat: number; lng: number } | null {
-  // Try to find coordinates in the HTML
-  const latMatch = html.match(/data-lat["\s]*[:=]["'\s]*(-?\d+\.?\d*)/i) ||
-                   html.match(/latitude["\s]*[:=]["'\s]*(-?\d+\.?\d*)/i) ||
-                   html.match(/"lat"\s*:\s*(-?\d+\.?\d*)/i) ||
-                   html.match(/lat:\s*(-?\d+\.?\d*)/i);
-  
-  const lngMatch = html.match(/data-lng["\s]*[:=]["'\s]*(-?\d+\.?\d*)/i) ||
-                   html.match(/longitude["\s]*[:=]["'\s]*(-?\d+\.?\d*)/i) ||
-                   html.match(/"lng"\s*:\s*(-?\d+\.?\d*)/i) ||
-                   html.match(/lng:\s*(-?\d+\.?\d*)/i);
-
-  if (latMatch && lngMatch) {
-    const lat = parseFloat(latMatch[1]);
-    const lng = parseFloat(lngMatch[1]);
-    
-    // Validate coordinates are in Brazil/DF region
-    if (lat >= -20 && lat <= -10 && lng >= -50 && lng <= -45) {
-      return { lat, lng };
-    }
-  }
-  
-  return null;
-}
-
-function parsePrice(priceText: string): number {
-  const cleaned = priceText.replace(/[^\d,]/g, "").replace(",", ".");
+// Extract price value from string
+function extractPriceValue(priceStr: string): number {
+  const cleaned = priceStr.replace(/[^\d,]/g, "").replace(",", ".");
   return parseFloat(cleaned) || 0;
 }
 
-async function scrapePropertyDetails(url: string): Promise<Partial<Property> | null> {
-  try {
-    const html = await fetchWithRetry(url);
-    const $ = cheerio.load(html);
-    
-    const coordinates = extractCoordinates(html);
-    
-    if (!coordinates) {
-      console.log(`No coordinates found for ${url}`);
-      return null;
-    }
-    
-    // Extract additional details from property page
-    const address = $(".property-address, .endereco, [class*='address']").first().text().trim();
-    
-    return {
-      latitude: coordinates.lat,
-      longitude: coordinates.lng,
-      address: address || undefined,
-    };
-  } catch (error) {
-    console.error(`Error scraping property details from ${url}:`, error);
-    return null;
-  }
-}
+// Parse listing page to get property links
+function parseListingPage(html: string, baseUrl: string): string[] {
+  const $ = cheerio.load(html);
+  const links: string[] = [];
 
-async function scrapeListingPage(url: string): Promise<{ properties: Property[]; errors: string[] }> {
-  const properties: Property[] = [];
-  const errors: string[] = [];
-  
-  try {
-    console.log(`Scraping listing page: ${url}`);
-    const html = await fetchWithRetry(url);
-    const $ = cheerio.load(html);
-    
-    // Find property cards - DFImóveis uses various selectors
-    const propertyCards = $(".card-imovel, .property-card, [class*='imovel'], .resultado-item, article").toArray();
-    
-    console.log(`Found ${propertyCards.length} property cards`);
-    
-    // Process properties in batches to avoid overwhelming the server
-    const batchSize = 5;
-    for (let i = 0; i < propertyCards.length; i += batchSize) {
-      const batch = propertyCards.slice(i, i + batchSize);
-      
-      const batchPromises = batch.map(async (card, index) => {
-        try {
-          const $card = $(card);
-          
-          // Extract basic info from listing card
-          const linkElement = $card.find("a[href*='/imovel/'], a[href*='/aluguel/'], a[href*='/venda/']").first();
-          let propertyUrl = linkElement.attr("href") || "";
-          
-          if (!propertyUrl) {
-            // Try to find any link in the card
-            propertyUrl = $card.find("a").first().attr("href") || "";
-          }
-          
-          if (!propertyUrl) {
-            console.log(`No URL found for card ${i + index}`);
-            return null;
-          }
-          
-          // Make URL absolute
-          if (propertyUrl.startsWith("/")) {
-            propertyUrl = `https://www.dfimoveis.com.br${propertyUrl}`;
-          }
-          
-          // Extract title
-          const title = $card.find(".card-title, .titulo, h2, h3, [class*='title']").first().text().trim() ||
-                       $card.find("a").first().attr("title") ||
-                       "Imóvel";
-          
-          // Extract price
-          const priceText = $card.find(".card-price, .preco, [class*='price'], [class*='valor']").first().text().trim();
-          const price = parsePrice(priceText);
-          
-          // Extract image
-          const imageElement = $card.find("img").first();
-          let image = imageElement.attr("data-src") || 
-                     imageElement.attr("src") || 
-                     imageElement.attr("data-lazy") ||
-                     "";
-          
-          if (image && !image.startsWith("http")) {
-            image = `https://www.dfimoveis.com.br${image}`;
-          }
-          
-          // Get property details (including coordinates)
-          const details = await scrapePropertyDetails(propertyUrl);
-          
-          if (!details || !details.latitude || !details.longitude) {
-            console.log(`Skipping property without coordinates: ${propertyUrl}`);
-            return null;
-          }
-          
-          const property: Property = {
-            id: `prop-${i + index}-${Date.now()}`,
-            title,
-            price,
-            priceFormatted: price > 0 ? `R$ ${price.toLocaleString("pt-BR")}` : priceText || "Consulte",
-            image: image || "/placeholder.svg",
-            url: propertyUrl,
-            latitude: details.latitude,
-            longitude: details.longitude,
-            address: details.address,
-          };
-          
-          return property;
-        } catch (error) {
-          console.error(`Error processing property ${i + index}:`, error);
-          return null;
-        }
-      });
-      
-      const batchResults = await Promise.all(batchPromises);
-      properties.push(...batchResults.filter((p): p is Property => p !== null));
-      
-      // Small delay between batches
-      if (i + batchSize < propertyCards.length) {
-        await new Promise(resolve => setTimeout(resolve, 500));
+  // DFImóveis uses various selectors for property cards
+  $('a[href*="/imovel/"], a[href*="/aluguel/"], a[href*="/venda/"]').each((_, el) => {
+    const href = $(el).attr("href");
+    if (href && (href.includes("/imovel/") || href.match(/\/\d+-/))) {
+      const fullUrl = href.startsWith("http") ? href : `https://www.dfimoveis.com.br${href}`;
+      if (!links.includes(fullUrl) && fullUrl.includes("dfimoveis.com.br")) {
+        links.push(fullUrl);
       }
     }
-    
-  } catch (error) {
-    console.error("Error scraping listing page:", error);
-    errors.push(`Erro ao acessar a página: ${(error as Error).message}`);
-  }
+  });
+
+  // Also try card-based selectors
+  $(".card-imovel a, .imovel-card a, [data-imovel] a, .property-card a").each((_, el) => {
+    const href = $(el).attr("href");
+    if (href) {
+      const fullUrl = href.startsWith("http") ? href : `https://www.dfimoveis.com.br${href}`;
+      if (!links.includes(fullUrl) && fullUrl.includes("dfimoveis.com.br")) {
+        links.push(fullUrl);
+      }
+    }
+  });
+
+  return [...new Set(links)].slice(0, 30); // Limit to 30 properties for performance
+}
+
+// Parse individual property page
+function parsePropertyPage(html: string, url: string): Property | null {
+  const $ = cheerio.load(html);
+
+  // Extract coordinates from script tags
+  // DFImóveis uses: latitude = -15.xxx; longitude = -47.xxx;
+  let latitude = 0;
+  let longitude = 0;
   
-  return { properties, errors };
+  $("script").each((_, el) => {
+    const content = $(el).html() || "";
+    
+    // Pattern: latitude = -15.8705378; longitude = -47.9686399;
+    const latMatch = content.match(/latitude\s*=\s*([-\d.]+)\s*;/i);
+    const lngMatch = content.match(/longitude\s*=\s*([-\d.]+)\s*;/i);
+    
+    if (latMatch && lngMatch) {
+      latitude = parseFloat(latMatch[1]);
+      longitude = parseFloat(lngMatch[1]);
+      return false; // Break out of loop
+    }
+  });
+
+  // Skip if no valid coordinates
+  if (!latitude || !longitude || latitude === 0 || longitude === 0) {
+    return null;
+  }
+
+  // Extract title
+  const title = $("h1").first().text().trim() ||
+    $(".titulo-imovel, .property-title, [class*='title']").first().text().trim() ||
+    $("title").text().split("|")[0].trim() ||
+    "Imóvel";
+
+  // Extract price
+  let price = "";
+  $(".valor, .preco, .price, [class*='price'], [class*='valor']").each((_, el) => {
+    const text = $(el).text().trim();
+    if (text.includes("R$") && !price) {
+      price = text;
+    }
+  });
+  
+  if (!price) {
+    const bodyText = $("body").text();
+    const priceMatch = bodyText.match(/R\$\s*[\d.,]+/);
+    if (priceMatch) {
+      price = priceMatch[0];
+    }
+  }
+
+  price = price || "Consulte";
+  const priceValue = extractPriceValue(price);
+
+  // Extract main image
+  let image = "";
+  $("img").each((_, el) => {
+    const src = $(el).attr("src") || $(el).attr("data-src") || "";
+    if (src && !image && (src.includes("imovel") || src.includes("foto") || src.includes("image"))) {
+      image = src.startsWith("http") ? src : `https://www.dfimoveis.com.br${src}`;
+    }
+  });
+
+  // Fallback to first substantial image
+  if (!image) {
+    $("img[src*='.jpg'], img[src*='.jpeg'], img[src*='.png'], img[src*='.webp']").each((_, el) => {
+      const src = $(el).attr("src") || "";
+      if (src && !image && !src.includes("logo") && !src.includes("icon")) {
+        image = src.startsWith("http") ? src : `https://www.dfimoveis.com.br${src}`;
+      }
+    });
+  }
+
+  // OG image as last fallback
+  if (!image) {
+    image = $('meta[property="og:image"]').attr("content") || "/placeholder.svg";
+  }
+
+  return {
+    id: url.split("/").pop() || Math.random().toString(36).substr(2, 9),
+    title: title.substring(0, 200),
+    price,
+    priceValue,
+    image,
+    link: url,
+    latitude,
+    longitude,
+  };
 }
 
 serve(async (req) => {
-  // Handle CORS preflight
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
     const { url } = await req.json();
-    
+
     if (!url || !url.includes("dfimoveis.com.br")) {
       return new Response(
         JSON.stringify({
           success: false,
           properties: [],
           total: 0,
-          errors: ["URL inválida. Forneça uma URL do DFImóveis."],
+          errors: ["URL inválida. Use uma URL do DFImóveis."],
         }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    console.log(`Starting scrape for URL: ${url}`);
+    console.log("Fetching listing page:", url);
+
+    // Fetch the listing page
+    const listingResponse = await fetch(url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept-Encoding": "gzip, deflate, br, zstd",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Cache-Control": "max-age=0",
+        "Referer": "https://www.dfimoveis.com.br/",
+        "DNT": "1",
+      },
+    });
+
+    if (!listingResponse.ok) {
+      throw new Error(`Falha ao acessar a página: ${listingResponse.status}`);
+    }
+
+    const listingHtml = await listingResponse.text();
+    const propertyLinks = parseListingPage(listingHtml, url);
+
+    console.log(`Found ${propertyLinks.length} property links`);
+
+    if (propertyLinks.length === 0) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          properties: [],
+          total: 0,
+          errors: ["Nenhum imóvel encontrado nesta listagem."],
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const properties: Property[] = [];
+    const errors: string[] = [];
+
+    // Fetch each property page (with concurrency limit)
+    const batchSize = 5;
     
-    const result = await scrapeListingPage(url);
-    
-    console.log(`Scraping complete. Found ${result.properties.length} properties with coordinates.`);
-    
+    for (let i = 0; i < propertyLinks.length; i += batchSize) {
+      const batch = propertyLinks.slice(i, i + batchSize);
+      
+      const batchResults = await Promise.allSettled(
+        batch.map(async (link) => {
+          try {
+            const response = await fetch(link, {
+              headers: {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Referer": url,
+              },
+            });
+
+            if (!response.ok) {
+              throw new Error(`HTTP ${response.status}`);
+            }
+
+            const html = await response.text();
+            
+            const property = parsePropertyPage(html, link);
+            
+            if (property) {
+              return property;
+            } else {
+              errors.push(`${link}: Sem coordenadas válidas`);
+              return null;
+            }
+          } catch (err) {
+            const errorMsg = err instanceof Error ? err.message : "Erro desconhecido";
+            errors.push(`${link}: ${errorMsg}`);
+            return null;
+          }
+        })
+      );
+
+      for (const result of batchResults) {
+        if (result.status === "fulfilled" && result.value) {
+          properties.push(result.value);
+        }
+      }
+    }
+
+    console.log(`Successfully scraped ${properties.length} properties`);
+
     return new Response(
       JSON.stringify({
-        success: result.properties.length > 0,
-        properties: result.properties,
-        total: result.properties.length,
-        errors: result.errors,
+        success: true,
+        properties,
+        total: properties.length,
+        errors: errors.slice(0, 10), // Limit error messages
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
-  } catch (error) {
-    console.error("Edge function error:", error);
+  } catch (err) {
+    console.error("Scraping error:", err);
+    const errorMsg = err instanceof Error ? err.message : "Erro ao buscar imóveis";
+    
     return new Response(
       JSON.stringify({
         success: false,
         properties: [],
         total: 0,
-        errors: [(error as Error).message || "Erro interno do servidor"],
+        errors: [errorMsg],
       }),
-      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
 });
