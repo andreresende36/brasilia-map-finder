@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Header } from "@/components/Header";
 import { SearchBar } from "@/components/SearchBar";
+import { PriceFilter } from "@/components/PriceFilter";
 import { PropertyList } from "@/components/PropertyList";
 import { PropertyMap } from "@/components/PropertyMap";
 import { LoadingState } from "@/components/LoadingState";
@@ -15,12 +16,35 @@ const Index = () => {
   const [error, setError] = useState<string | null>(null);
   const [selectedProperty, setSelectedProperty] = useState<Property | undefined>();
   const [lastUrl, setLastUrl] = useState("");
+  
+  // Price filter state
+  const [priceRange, setPriceRange] = useState({ min: 0, max: Infinity });
+
+  // Calculate price bounds from properties
+  const priceBounds = useMemo(() => {
+    if (properties.length === 0) return { min: 0, max: 10000 };
+    const prices = properties.map(p => p.priceValue).filter(p => p > 0);
+    if (prices.length === 0) return { min: 0, max: 10000 };
+    return {
+      min: Math.min(...prices),
+      max: Math.max(...prices),
+    };
+  }, [properties]);
+
+  // Filter properties by price
+  const filteredProperties = useMemo(() => {
+    return properties.filter(p => {
+      if (priceRange.max === Infinity) return true;
+      return p.priceValue >= priceRange.min && p.priceValue <= priceRange.max;
+    });
+  }, [properties, priceRange]);
 
   const handleSearch = async (url: string) => {
     setIsLoading(true);
     setError(null);
     setSelectedProperty(undefined);
     setLastUrl(url);
+    setPriceRange({ min: 0, max: Infinity });
 
     try {
       const result = await scrapeProperties(url);
@@ -50,6 +74,11 @@ const Index = () => {
     }
   };
 
+  const handleFilterChange = (min: number, max: number) => {
+    setPriceRange({ min, max });
+    toast.info(`Filtro aplicado: ${filteredProperties.length} imóveis`);
+  };
+
   return (
     <div className="flex flex-col h-screen bg-background">
       <Header />
@@ -59,6 +88,14 @@ const Index = () => {
         <aside className="w-96 border-r border-border bg-card flex flex-col">
           <div className="p-4 space-y-4 border-b border-border">
             <SearchBar onSearch={handleSearch} isLoading={isLoading} />
+            
+            {properties.length > 0 && (
+              <PriceFilter
+                minPrice={priceBounds.min}
+                maxPrice={priceBounds.max}
+                onFilterChange={handleFilterChange}
+              />
+            )}
           </div>
 
           <div className="flex-1 p-4 overflow-hidden">
@@ -68,7 +105,7 @@ const Index = () => {
               <ErrorState message={error} onRetry={lastUrl ? handleRetry : undefined} />
             ) : (
               <PropertyList
-                properties={properties}
+                properties={filteredProperties}
                 selectedId={selectedProperty?.id}
                 onSelect={setSelectedProperty}
               />
@@ -79,7 +116,7 @@ const Index = () => {
         {/* Map */}
         <main className="flex-1 p-4">
           <PropertyMap
-            properties={properties}
+            properties={filteredProperties}
             selectedProperty={selectedProperty}
             onSelectProperty={setSelectedProperty}
           />
